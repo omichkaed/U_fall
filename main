@@ -1,0 +1,81 @@
+# Load the Python Standard and DesignScript Libraries
+import sys
+import clr
+
+# Add Assemblies for AutoCAD and Civil3D
+clr.AddReference('AcMgd')
+clr.AddReference('AcCoreMgd')
+clr.AddReference('AcDbMgd')
+clr.AddReference('AecBaseMgd')
+clr.AddReference('AecPropDataMgd')
+clr.AddReference('AeccDbMgd')
+clr.AddReference('AeccPressurePipesMgd')
+
+# Import references from AutoCAD
+from Autodesk.AutoCAD.Runtime import *
+from Autodesk.AutoCAD.ApplicationServices import *
+from Autodesk.AutoCAD.EditorInput import *
+from Autodesk.AutoCAD.DatabaseServices import *
+from Autodesk.AutoCAD.Geometry import *
+
+# Import references from Civil3D
+from Autodesk.Civil.ApplicationServices import *
+from Autodesk.Civil.DatabaseServices import *
+
+# The inputs to this node will be stored as a list in the IN variables.
+dataEnteringNode = IN
+
+adoc = Application.DocumentManager.MdiActiveDocument
+civdoc = CivilApplication.ActiveDocument
+editor = adoc.Editor
+
+towers_result = IN[0]
+
+number_towers = []
+psdif_list = []
+psdata_list = []
+cov_type_list = []
+
+for number_tower in towers_result: # из полученого расчёт падения напряжения выделяем номера опор
+    number_towers.append(number_tower[0])
+
+with adoc.LockDocument():
+    with adoc.Database as db:
+        PPNIds = CivilDocumentPressurePipesExtension.GetPressurePipeNetworkIds(civdoc) # получаем ID всех напорных трубопроводных сетей
+        styles_all = civdoc.Styles #Обращение к списку стилей цивил
+        styles_labels = styles_all.LabelStyles #Обращение к списку стилей меток цивил
+        labels_tower = Styles.LabelStylesRootPressurePipesExtension.GetPressureAppurtenanceLabelStyles(styles_labels) #Получаем ID стилей меток фитингов
+        labels_tower_id = labels_tower.LabelStyles
+        with db.TransactionManager.StartTransaction() as t:
+            for i in PPNIds: # фильтруем все сети, чтобы получить ID где находится опоры (УРП)
+                if 'опоры и шно' in t.GetObject(i, OpenMode.ForRead).get_Name().lower():
+                    PPNObjects = t.GetObject(i, OpenMode.ForRead)
+            PPNApurIds = PPNObjects.GetAppurtenanceIds() # получаем ID опор (УРП)
+            PPNIds_temp = t.GetObject(PPNIds[0], OpenMode.ForWrite)
+            for i in labels_tower_id:
+                if t.GetObject(i, OpenMode.ForRead).get_Name() == 'ASML_ЭН_201_Потери напряжения и токи КЗ':
+                    label_style = i
+
+            vector = Vector3d(1, 1, 1) #Создаем вектор
+            NewLabels = []
+            for i in PPNApurIds:
+                if t.GetObject(i, OpenMode.ForRead).Name in number_towers: # проверяем, чтобы каждая метка которую мы создадим была в перечне для опор для которых посчитано падение напряжения
+
+                    NewLabels.append(str(t.GetObject(PressureAppurtenanceLabel.Create(i, label_style, 0, vector), OpenMode.ForRead).Handle)) #Создаем метки для расчитанных опор
+                    obj_pscol = PropertyDataServices.GetPropertySets(i) # получение всех наборов характеристик
+                    for psid in obj_pscol:
+                        if t.GetObject(psid, OpenMode.ForRead).PropertySetDefinitionName == 'Опоры':
+                            psdid = t.GetObject(psid, OpenMode.ForRead).PropertySetDefinition
+                            
+                            psdif = t.GetObject(psdid, OpenMode.ForRead).Definitions
+                            psdif_list.append(psdif)
+                            psdata = t.GetObject(psid, OpenMode.ForRead).PropertySetData
+                            psdata_list.append(psdata)
+                            for i in range(len(psdif)):
+                                if psdif[i].Name == 'Тип_покрытия':
+                                    cov_type = psdata[i].GetData()
+                                    cov_type_list.append(cov_type)
+            t.Commit()
+
+# Assign your output to the OUT variable.
+OUT = NewLabels
